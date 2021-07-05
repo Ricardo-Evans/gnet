@@ -18,8 +18,6 @@ func (c *client) Dial(addr string, socketOpts ...socket.Option) (Conn, error) {
 	}
 	fd := c.svr.ln.fd
 	lna := c.svr.ln.lnaddr
-	el := c.svr.lb.next(na)
-	err = el.poller.AddRead(fd)
 	connection := &conn{
 		fd:         fd,
 		sa:         sa,
