@@ -38,7 +38,7 @@ import (
 type Action int
 
 type Client interface {
-	Dial(addr string, localAddr string, socketOpts ...socket.Option) (Conn, error)
+	Dial(addr string, socketOpts ...socket.Option) (Conn, error)
 }
 
 const (
