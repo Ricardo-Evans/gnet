@@ -23,6 +23,7 @@ package gnet
 
 import (
 	"context"
+	"github.com/panjf2000/gnet/internal/socket"
 	"net"
 	"strings"
 	"sync"
@@ -35,6 +36,10 @@ import (
 
 // Action is an action that occurs after the completion of an event.
 type Action int
+
+type Client interface {
+	Dial(addr string, localAddr string, socketOpts ...socket.Option) (Conn, error)
+}
 
 const (
 	// None indicates that no action should occur following an event.
@@ -245,7 +250,7 @@ func (es *EventServer) Tick() (delay time.Duration, action Action) {
 //  unix  - Unix Domain Socket
 //
 // The "tcp" network scheme is assumed when one is not specified.
-func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (err error) {
+func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (c Client, err error) {
 	options := loadOptions(opts...)
 
 	logging.Init(options.LogLevel)
@@ -266,7 +271,7 @@ func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (err err
 	if options.LockOSThread && options.NumEventLoop > 10000 {
 		logging.Errorf("too many event-loops under LockOSThread mode, should be less than 10,000 "+
 			"while you are trying to set up %d\n", options.NumEventLoop)
-		return errors.ErrTooManyEventLoopThreads
+		return nil, errors.ErrTooManyEventLoopThreads
 	}
 
 	if rbc := options.ReadBufferCap; rbc <= 0 {
@@ -282,8 +287,12 @@ func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (err err
 		return
 	}
 	defer ln.close()
-
-	return serve(eventHandler, ln, options, protoAddr)
+	server, err := serve(eventHandler, ln, options, protoAddr)
+	if err != nil {
+		return
+	}
+	c = &client{server}
+	return
 }
 
 var (

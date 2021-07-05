@@ -31,6 +31,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func GetUDPSocketAddr(network, addr string) (sa unix.Sockaddr, na net.Addr, err error) {
+	sa, _, na, _, err = getUDPSockaddr(network, addr)
+	return
+}
+
 func getUDPSockaddr(proto, addr string) (sa unix.Sockaddr, family int, udpAddr *net.UDPAddr, ipv6only bool, err error) {
 	var udpVersion string
 
