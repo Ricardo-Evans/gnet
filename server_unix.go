@@ -231,7 +231,7 @@ func (svr *server) stop(s Server) {
 	atomic.StoreInt32(&svr.inShutdown, 1)
 }
 
-func serve(eventHandler EventHandler, listener *listener, options *Options, protoAddr string) (Server, error) {
+func serve(eventHandler EventHandler, listener *listener, options *Options, protoAddr string) error {
 	// Figure out the proper number of event-loops/goroutines to run.
 	numEventLoop := 1
 	if options.Multicore {
@@ -274,20 +274,21 @@ func serve(eventHandler EventHandler, listener *listener, options *Options, prot
 		ReusePort:    options.ReusePort,
 		TCPKeepAlive: options.TCPKeepAlive,
 	}
-	switch svr.eventHandler.OnInitComplete(server) {
-	case None:
-	case Shutdown:
-		return server, nil
-	}
 
 	if err := svr.start(numEventLoop); err != nil {
 		svr.closeEventLoops()
 		logging.Errorf("gnet server is stopping with error: %v", err)
-		return server, err
+		return err
 	}
 	defer svr.stop(server)
 
 	allServers.Store(protoAddr, svr)
 
-	return server, nil
+	switch svr.eventHandler.OnInitComplete(server, &client{server}) {
+	case None:
+	case Shutdown:
+		return nil
+	}
+
+	return nil
 }

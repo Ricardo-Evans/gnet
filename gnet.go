@@ -156,7 +156,7 @@ type (
 	EventHandler interface {
 		// OnInitComplete fires when the server is ready for accepting connections.
 		// The parameter:server has information and various utilities.
-		OnInitComplete(server Server) (action Action)
+		OnInitComplete(server Server, client Client) (action Action)
 
 		// OnShutdown fires when the server is being shut down, it is called right after
 		// all event-loops and connections are closed.
@@ -196,7 +196,7 @@ type (
 
 // OnInitComplete fires when the server is ready for accepting connections.
 // The parameter:server has information and various utilities.
-func (es *EventServer) OnInitComplete(svr Server) (action Action) {
+func (es *EventServer) OnInitComplete(svr Server, clt Client) (action Action) {
 	return
 }
 
@@ -250,7 +250,7 @@ func (es *EventServer) Tick() (delay time.Duration, action Action) {
 //  unix  - Unix Domain Socket
 //
 // The "tcp" network scheme is assumed when one is not specified.
-func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (c Client, err error) {
+func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (err error) {
 	options := loadOptions(opts...)
 
 	logging.Init(options.LogLevel)
@@ -271,7 +271,7 @@ func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (c Clien
 	if options.LockOSThread && options.NumEventLoop > 10000 {
 		logging.Errorf("too many event-loops under LockOSThread mode, should be less than 10,000 "+
 			"while you are trying to set up %d\n", options.NumEventLoop)
-		return nil, errors.ErrTooManyEventLoopThreads
+		return errors.ErrTooManyEventLoopThreads
 	}
 
 	if rbc := options.ReadBufferCap; rbc <= 0 {
@@ -287,11 +287,10 @@ func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (c Clien
 		return
 	}
 	defer ln.close()
-	server, err := serve(eventHandler, ln, options, protoAddr)
+	err = serve(eventHandler, ln, options, protoAddr)
 	if err != nil {
 		return
 	}
-	c = &client{server}
 	return
 }
 
