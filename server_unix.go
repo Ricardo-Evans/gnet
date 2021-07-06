@@ -284,7 +284,7 @@ func serve(eventHandler EventHandler, listener *listener, options *Options, prot
 
 	allServers.Store(protoAddr, svr)
 
-	switch svr.eventHandler.OnInitComplete(server, &client{server}) {
+	switch svr.eventHandler.OnInitComplete(server, newClient(server)) {
 	case None:
 	case Shutdown:
 		return nil

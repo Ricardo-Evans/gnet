@@ -39,6 +39,7 @@ type Action int
 
 type Client interface {
 	Dial(addr string, socketOpts ...socket.Option) (Conn, error)
+	Close()
 }
 
 const (
