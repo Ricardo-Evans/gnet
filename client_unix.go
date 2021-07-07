@@ -42,7 +42,7 @@ func (c *client) Dial(addr string, localAddr string, socketOpts ...Option) (Conn
 		options = append(options, socket.Option{SetSockopt: socket.SetSendBuffer, Opt: option.SocketSendBuffer})
 	}
 	network, address := parseProtoAddr(addr)
-	localNetwork, localAddress := parseProtoAddr(addr)
+	localNetwork, localAddress := parseProtoAddr(localAddr)
 	sa, na, err := socket.GetUDPSocketAddr(network, address)
 	if err != nil {
 		return nil, err
