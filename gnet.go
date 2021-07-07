@@ -23,7 +23,6 @@ package gnet
 
 import (
 	"context"
-	"github.com/panjf2000/gnet/internal/socket"
 	"net"
 	"strings"
 	"sync"
@@ -38,7 +37,7 @@ import (
 type Action int
 
 type Client interface {
-	Dial(addr string, socketOpts ...socket.Option) (Conn, error)
+	Dial(addr string, socketOpts ...Option) (Conn, error)
 	Close()
 }
 
