@@ -29,20 +29,10 @@ func newClient(server Server) *client {
 	}
 }
 
-func (c *client) Dial(addr string, localAddr string, socketOpts ...Option) (Conn, error) {
-	option := loadOptions(socketOpts...)
-	var options []socket.Option
-	if option.ReusePort {
-		options = append(options, socket.Option{SetSockopt: socket.SetReuseport, Opt: 1})
-	}
-	if option.SocketRecvBuffer > 0 {
-		options = append(options, socket.Option{SetSockopt: socket.SetRecvBuffer, Opt: option.SocketRecvBuffer})
-	}
-	if option.SocketSendBuffer > 0 {
-		options = append(options, socket.Option{SetSockopt: socket.SetSendBuffer, Opt: option.SocketSendBuffer})
-	}
+func (c *client) Dial(addr string) (Conn, error) {
+	options := c.svr.ln.sockopts
 	network, address := parseProtoAddr(addr)
-	localNetwork, localAddress := parseProtoAddr(localAddr)
+	localNetwork, localAddress := c.svr.ln.network, c.svr.ln.addr
 	sa, na, err := socket.GetUDPSocketAddr(network, address)
 	if err != nil {
 		return nil, err
