@@ -3,8 +3,8 @@
 package gnet
 
 import (
-	"github.com/panjf2000/gnet/internal/logging"
 	"github.com/panjf2000/gnet/internal/socket"
+	"github.com/panjf2000/gnet/logging"
 	"golang.org/x/sys/unix"
 	"net"
 	"os"
