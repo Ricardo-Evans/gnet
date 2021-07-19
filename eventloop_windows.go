@@ -28,10 +28,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/panjf2000/gnet/internal/logging"
-	"github.com/panjf2000/gnet/pool/bytebuffer"
-
 	"github.com/panjf2000/gnet/errors"
+	"github.com/panjf2000/gnet/logging"
+	"github.com/panjf2000/gnet/pool/bytebuffer"
 )
 
 type eventloop struct {
@@ -50,6 +49,10 @@ type internalEventloop struct {
 	connCount    int32                 // number of active connections in event-loop
 	connections  map[*stdConn]struct{} // track all the sockets bound to this loop
 	eventHandler EventHandler          // user eventHandler
+}
+
+func (el *eventloop) getLogger() logging.Logger {
+	return el.svr.opts.Logger
 }
 
 func (el *eventloop) addConn(delta int32) {
@@ -74,8 +77,8 @@ func (el *eventloop) loopRun(lockOSThread bool) {
 		el.svr.loopWG.Done()
 	}()
 
-	for v := range el.ch {
-		switch v := v.(type) {
+	for i := range el.ch {
+		switch v := i.(type) {
 		case error:
 			err = v
 		case *stdConn:
@@ -87,16 +90,19 @@ func (el *eventloop) loopRun(lockOSThread bool) {
 			err = el.loopReadUDP(v.c)
 		case *stderr:
 			err = el.loopError(v.c, v.err)
-		case wakeReq:
-			err = el.loopWake(v.c)
-		case func() error:
-			err = v()
+		case *signalTask:
+			err = v.run(v.c)
+			signalTaskPool.Put(i)
+		case *dataTask:
+			_, err = v.run(v.buf)
+			dataTaskPool.Put(i)
 		}
 
 		if err == errors.ErrServerShutdown {
+			el.getLogger().Infof("event-loop(%d) is exiting in terms of the demand from user, %v", el.idx, err)
 			break
 		} else if err != nil {
-			logging.Infof("Event-loop(%d) is exiting due to the error: %v", el.idx, err)
+			el.getLogger().Errorf("event-loop(%d) is exiting due to the error: %v", el.idx, err)
 		}
 	}
 }
@@ -183,8 +189,8 @@ func (el *eventloop) loopTicker(ctx context.Context) {
 	for {
 		delay, action = el.eventHandler.Tick()
 		if action == Shutdown {
-			el.ch <- func() error { return errors.ErrServerShutdown }
-			// logging.Debugf("stopping ticker in event-loop(%d) from Tick()", el.idx)
+			el.ch <- errors.ErrServerShutdown
+			el.getLogger().Debugf("stopping ticker in event-loop(%d) from Tick()", el.idx)
 		}
 		if timer == nil {
 			timer = time.NewTimer(delay)
@@ -193,7 +199,7 @@ func (el *eventloop) loopTicker(ctx context.Context) {
 		}
 		select {
 		case <-ctx.Done():
-			// logging.Debugf("stopping ticker in event-loop(%d) from Server, error:%v", el.idx, ctx.Err())
+			el.getLogger().Debugf("stopping ticker in event-loop(%d) from Server, error:%v", el.idx, ctx.Err())
 			return
 		case <-timer.C:
 		}
@@ -207,7 +213,7 @@ func (el *eventloop) loopError(c *stdConn, err error) (e error) {
 		}
 
 		if err = c.conn.Close(); err != nil {
-			logging.Warnf("Failed to close connection(%s), error: %v", c.remoteAddr.String(), err)
+			el.getLogger().Errorf("failed to close connection(%s), error: %v", c.remoteAddr.String(), err)
 			if e == nil {
 				e = err
 			}

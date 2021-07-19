@@ -1,4 +1,4 @@
-// Copyright (c) 2019 Andy Pan
+// Copyright (c) 2021 Andy Pan
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -18,41 +18,35 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-// +build freebsd dragonfly darwin
+package queue
 
-package netpoll
+import "sync"
 
-import "golang.org/x/sys/unix"
+// TaskFunc is the callback function executed by poller.
+type TaskFunc func(interface{}) error
 
-const (
-	// InitPollEventsCap represents the initial capacity of poller event-list.
-	InitPollEventsCap = 64
-	// MaxAsyncTasksAtOneTime is the maximum amount of asynchronous tasks that the event-loop will process at one time.
-	MaxAsyncTasksAtOneTime = 128
-	// EVFilterWrite represents writeable events from sockets.
-	EVFilterWrite = unix.EVFILT_WRITE
-	// EVFilterRead represents readable events from sockets.
-	EVFilterRead = unix.EVFILT_READ
-	// EVFilterSock represents exceptional events that are not read/write, like socket being closed,
-	// reading/writing from/to a closed socket, etc.
-	EVFilterSock = -0xd
-)
-
-type eventList struct {
-	size   int
-	events []unix.Kevent_t
+// Task is a wrapper that contains function and its argument.
+type Task struct {
+	Run TaskFunc
+	Arg interface{}
 }
 
-func newEventList(size int) *eventList {
-	return &eventList{size, make([]unix.Kevent_t, size)}
+var taskPool = sync.Pool{New: func() interface{} { return new(Task) }}
+
+// GetTask gets a cached Task from pool.
+func GetTask() *Task {
+	return taskPool.Get().(*Task)
 }
 
-func (el *eventList) expand() {
-	el.size <<= 1
-	el.events = make([]unix.Kevent_t, el.size)
+// PutTask puts the trashy Task back in pool.
+func PutTask(task *Task) {
+	task.Run, task.Arg = nil, nil
+	taskPool.Put(task)
 }
 
-func (el *eventList) shrink() {
-	el.size >>= 1
-	el.events = make([]unix.Kevent_t, el.size)
+// AsyncTaskQueue is a queue storing asynchronous tasks.
+type AsyncTaskQueue interface {
+	Enqueue(*Task)
+	Dequeue() *Task
+	Empty() bool
 }

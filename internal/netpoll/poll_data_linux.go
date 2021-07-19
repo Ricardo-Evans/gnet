@@ -1,4 +1,4 @@
-// Copyright (c) 2019 Andy Pan
+// Copyright (c) 2021 Andy Pan
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -18,47 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-// +build linux freebsd dragonfly darwin
+package netpoll
 
-package gnet
-
-import (
-	"os"
-
-	"github.com/panjf2000/gnet/errors"
-	"github.com/panjf2000/gnet/internal/socket"
-	"golang.org/x/sys/unix"
-)
-
-func (svr *server) acceptNewConnection(fd int) error {
-	nfd, sa, err := unix.Accept(fd)
-	if err != nil {
-		if err == unix.EAGAIN {
-			return nil
-		}
-		return errors.ErrAcceptSocket
-	}
-	if err = os.NewSyscallError("fcntl nonblock", unix.SetNonblock(nfd, true)); err != nil {
-		return err
-	}
-
-	netAddr := socket.SockaddrToTCPOrUnixAddr(sa)
-	el := svr.lb.next(netAddr)
-	c := newTCPConn(nfd, el, sa, netAddr)
-
-	err = el.poller.Trigger(func() (err error) {
-		if err = el.poller.AddRead(nfd); err != nil {
-			_ = unix.Close(nfd)
-			c.releaseTCP()
-			return
-		}
-		el.connections[nfd] = c
-		err = el.loopOpen(c)
-		return
-	})
-	if err != nil {
-		_ = unix.Close(nfd)
-		c.releaseTCP()
-	}
-	return nil
-}
+// PollEventHandler is the callback for I/O events notified by the poller.
+type PollEventHandler func(uint32) error

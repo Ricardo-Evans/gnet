@@ -30,7 +30,7 @@ import (
 
 	"github.com/panjf2000/gnet/errors"
 	"github.com/panjf2000/gnet/internal"
-	"github.com/panjf2000/gnet/internal/logging"
+	"github.com/panjf2000/gnet/logging"
 )
 
 // Action is an action that occurs after the completion of an event.
@@ -90,7 +90,7 @@ func (s Server) CountConnections() (count int) {
 // It is the caller's responsibility to close dupFD when finished.
 // Closing listener does not affect dupFD, and closing dupFD does not affect listener.
 func (s Server) DupFd() (dupFD int, err error) {
-	dupFD, sc, err := s.svr.ln.Dup()
+	dupFD, sc, err := s.svr.ln.dup()
 	if err != nil {
 		logging.Warnf("%s failed when duplicating new fd\n", sc)
 	}
@@ -253,21 +253,31 @@ func (es *EventServer) Tick() (delay time.Duration, action Action) {
 func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (err error) {
 	options := loadOptions(opts...)
 
-	logging.Init(options.LogLevel)
+	logging.Debugf("default logging level is %s", logging.LogLevel())
 
+	var (
+		logger logging.Logger
+		flush  func() error
+	)
 	if options.LogPath != "" {
-		err = logging.SetupLoggerWithPath(options.LogPath, options.LogLevel)
+		if logger, flush, err = logging.CreateLoggerAsLocalFile(options.LogPath, options.LogLevel); err != nil {
+			return
+		}
+	} else {
+		logger = logging.GetDefaultLogger()
 	}
-	if err != nil {
-		return
+	if options.Logger == nil {
+		options.Logger = logger
 	}
-	if options.Logger != nil {
-		logging.SetupLogger(options.Logger, options.LogLevel)
-	}
-	defer logging.Cleanup()
+	defer func() {
+		if flush != nil {
+			_ = flush()
+		}
+		logging.Cleanup()
+	}()
 
 	// The maximum number of operating system threads that the Go program can use is initially set to 10000,
-	// which should be the maximum amount of I/O event-loops locked to OS threads users can start up.
+	// which should also be the maximum amount of I/O event-loops locked to OS threads that users can start up.
 	if options.LockOSThread && options.NumEventLoop > 10000 {
 		logging.Errorf("too many event-loops under LockOSThread mode, should be less than 10,000 "+
 			"while you are trying to set up %d\n", options.NumEventLoop)
@@ -275,7 +285,7 @@ func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (err err
 	}
 
 	if rbc := options.ReadBufferCap; rbc <= 0 {
-		options.ReadBufferCap = 0x4000
+		options.ReadBufferCap = 0x10000
 	} else {
 		options.ReadBufferCap = internal.CeilToPowerOfTwo(rbc)
 	}

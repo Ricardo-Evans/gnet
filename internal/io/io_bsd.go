@@ -1,4 +1,4 @@
-// Copyright (c) 2019 Andy Pan
+// Copyright (c) 2021 Andy Pan
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,39 +20,48 @@
 
 // +build freebsd dragonfly darwin
 
-package netpoll
+package io
 
-import "golang.org/x/sys/unix"
+import (
+	"golang.org/x/sys/unix"
 
-const (
-	// InitPollEventsCap represents the initial capacity of poller event-list.
-	InitPollEventsCap = 64
-	// MaxAsyncTasksAtOneTime is the maximum amount of asynchronous tasks that the event-loop will process at one time.
-	MaxAsyncTasksAtOneTime = 128
-	// EVFilterWrite represents writeable events from sockets.
-	EVFilterWrite = unix.EVFILT_WRITE
-	// EVFilterRead represents readable events from sockets.
-	EVFilterRead = unix.EVFILT_READ
-	// EVFilterSock represents exceptional events that are not read/write, like socket being closed,
-	// reading/writing from/to a closed socket, etc.
-	EVFilterSock = -0xd
+	"github.com/panjf2000/gnet/errors"
 )
 
-type eventList struct {
-	size   int
-	events []unix.Kevent_t
+// Writev simply calls write() multiple times cuz writev() on BSD-like OS's is not yet implemented in Go.
+func Writev(fd int, iov [][]byte) (int, error) {
+	var sum int
+	for i := range iov {
+		n, err := unix.Write(fd, iov[i])
+		if err != nil {
+			if sum == 0 {
+				sum = n
+			}
+			return sum, err
+		}
+		sum += n
+		if n < len(iov[i]) {
+			return sum, errors.ErrShortWritev
+		}
+	}
+	return sum, nil
 }
 
-func newEventList(size int) *eventList {
-	return &eventList{size, make([]unix.Kevent_t, size)}
-}
-
-func (el *eventList) expand() {
-	el.size <<= 1
-	el.events = make([]unix.Kevent_t, el.size)
-}
-
-func (el *eventList) shrink() {
-	el.size >>= 1
-	el.events = make([]unix.Kevent_t, el.size)
+// Readv simply calls read() multiple times cuz readv() on BSD-like OS's is not yet implemented in Go.
+func Readv(fd int, iov [][]byte) (int, error) {
+	var sum int
+	for i := range iov {
+		n, err := unix.Read(fd, iov[i])
+		if err != nil {
+			if sum == 0 {
+				sum = n
+			}
+			return sum, err
+		}
+		sum += n
+		if n < len(iov[i]) {
+			return sum, errors.ErrShortReadv
+		}
+	}
+	return sum, nil
 }

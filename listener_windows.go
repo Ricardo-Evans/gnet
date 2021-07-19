@@ -26,8 +26,8 @@ import (
 	"sync"
 
 	"github.com/panjf2000/gnet/errors"
-	"github.com/panjf2000/gnet/internal/logging"
 	"github.com/panjf2000/gnet/internal/netpoll"
+	"github.com/panjf2000/gnet/logging"
 )
 
 type listener struct {
@@ -38,7 +38,7 @@ type listener struct {
 	addr, network string
 }
 
-func (ln *listener) Dup() (int, string, error) {
+func (ln *listener) dup() (int, string, error) {
 	return netpoll.Dup(0)
 }
 

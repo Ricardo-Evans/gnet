@@ -25,15 +25,37 @@
 // implementing the `Logger` interface and assign it to the functional option `Options.Logger`,
 // pass it to `gnet.Serve` method.
 //
-// There are two logging modes in zap, instantiated by either NewProduction() or NewDevelopment(),
-// the former builds a sensible production Logger that writes InfoLevel and above logs to standard error as JSON,
-// it's a shortcut for NewProductionConfig().Build(...Option); the latter builds a development Logger
-// that writes DebugLevel and above logs to standard error in a human-friendly format,
-// it's a shortcut for NewDevelopmentConfig().Build(...Option).
+// The environment variable `GNET_LOGGING_LEVEL` determines which zap logger level will be applied for logging.
+// The environment variable `GNET_LOGGING_FILE` is set to a local file path when you want to print logs into local file.
+// Alternatives of logging level (the variable of logging level ought to be integer):
+/*
+const (
+	// DebugLevel logs are typically voluminous, and are usually disabled in
+	// production.
+	DebugLevel Level = iota - 1
+	// InfoLevel is the default logging priority.
+	InfoLevel
+	// WarnLevel logs are more important than Info, but don't need individual
+	// human review.
+	WarnLevel
+	// ErrorLevel logs are high-priority. If an application is running smoothly,
+	// it shouldn't generate any error-level logs.
+	ErrorLevel
+	// DPanicLevel logs are particularly important errors. In development the
+	// logger panics after writing the message.
+	DPanicLevel
+	// PanicLevel logs a message, then panics.
+	PanicLevel
+	// FatalLevel logs a message, then calls os.Exit(1).
+	FatalLevel
+)
+*/
 package logging
 
 import (
 	"errors"
+	"os"
+	"strconv"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -41,19 +63,35 @@ import (
 )
 
 var (
-	// DefaultLogger is the default logger inside the tbuspp client.
-	DefaultLogger Logger
-	zapLogger     *zap.Logger
-	loggingLevel  zapcore.Level
+	flushLogs           func() error
+	defaultLogger       Logger
+	defaultLoggingLevel zapcore.Level
 )
 
-// Init initializes the inside default logger of client.
-func Init(logLevel zapcore.Level) {
-	cfg := zap.NewDevelopmentConfig()
-	loggingLevel = logLevel
-	cfg.Level = zap.NewAtomicLevelAt(logLevel)
-	zapLogger, _ = cfg.Build()
-	DefaultLogger = zapLogger.Sugar()
+func init() {
+	lvl := os.Getenv("GNET_LOGGING_LEVEL")
+	if len(lvl) > 0 {
+		loggingLevel, err := strconv.ParseInt(lvl, 10, 8)
+		if err != nil {
+			panic("invalid GNET_LOGGING_LEVEL, " + err.Error())
+		}
+		defaultLoggingLevel = zapcore.Level(loggingLevel)
+	}
+
+	// Initializes the inside default logger of client.
+	fileName := os.Getenv("GNET_LOGGING_FILE")
+	if len(fileName) > 0 {
+		var err error
+		defaultLogger, flushLogs, err = CreateLoggerAsLocalFile(fileName, defaultLoggingLevel)
+		if err != nil {
+			panic("invalid GNET_LOGGING_FILE, " + err.Error())
+		}
+	} else {
+		cfg := zap.NewDevelopmentConfig()
+		cfg.Level = zap.NewAtomicLevelAt(defaultLoggingLevel)
+		zapLogger, _ := cfg.Build()
+		defaultLogger = zapLogger.Sugar()
+	}
 }
 
 func getEncoder() zapcore.Encoder {
@@ -63,84 +101,81 @@ func getEncoder() zapcore.Encoder {
 	return zapcore.NewConsoleEncoder(encoderConfig)
 }
 
-// SetupLoggerWithPath setups the logger by local file path.
-func SetupLoggerWithPath(localPath string, logLevel zapcore.Level) (err error) {
-	if len(localPath) == 0 {
-		return errors.New("invalid local logger path")
+// GetDefaultLogger returns the default logger.
+func GetDefaultLogger() Logger {
+	return defaultLogger
+}
+
+// LogLevel tells what the default logging level is.
+func LogLevel() string {
+	return defaultLoggingLevel.String()
+}
+
+// CreateLoggerAsLocalFile setups the logger by local file path.
+func CreateLoggerAsLocalFile(localFilePath string, logLevel zapcore.Level) (logger Logger, flush func() error, err error) {
+	if len(localFilePath) == 0 {
+		return nil, nil, errors.New("invalid local logger path")
 	}
 
 	// lumberjack.Logger is already safe for concurrent use, so we don't need to lock it.
-	w := &lumberjack.Logger{
-		Filename:   localPath,
+	lumberJackLogger := &lumberjack.Logger{
+		Filename:   localFilePath,
 		MaxSize:    100, // megabytes
 		MaxBackups: 3,
 		MaxAge:     28, // days
 	}
 
-	loggingLevel = logLevel
 	encoder := getEncoder()
-	syncer := zapcore.AddSync(w)
-	highPriority := zap.LevelEnablerFunc(func(level zapcore.Level) bool {
+	ws := zapcore.AddSync(lumberJackLogger)
+	zapcore.Lock(ws)
+
+	levelEnabler := zap.LevelEnablerFunc(func(level zapcore.Level) bool {
 		return level >= logLevel
 	})
-	core := zapcore.NewCore(encoder, syncer, highPriority)
+	core := zapcore.NewCore(encoder, ws, levelEnabler)
 	zapLogger := zap.New(core, zap.AddCaller())
-	DefaultLogger = zapLogger.Sugar()
-	return nil
-}
-
-// SetupLogger setups the logger by the Logger interface.
-func SetupLogger(logger Logger, logLevel zapcore.Level) {
-	if logger == nil {
-		return
-	}
-	loggingLevel = logLevel
-	zapLogger = nil
-	DefaultLogger = logger
+	logger = zapLogger.Sugar()
+	flush = zapLogger.Sync
+	return
 }
 
 // Cleanup does something windup for logger, like closing, flushing, etc.
 func Cleanup() {
-	if zapLogger != nil {
-		_ = zapLogger.Sync()
+	if flushLogs != nil {
+		_ = flushLogs()
 	}
 }
 
 // LogErr prints err if it's not nil.
 func LogErr(err error) {
 	if err != nil {
-		DefaultLogger.Errorf("error occurs during runtime, %v", err)
+		defaultLogger.Errorf("error occurs during runtime, %v", err)
 	}
-}
-
-// Level returns the logging level.
-func Level() zapcore.Level {
-	return loggingLevel
 }
 
 // Debugf logs messages at DEBUG level.
 func Debugf(format string, args ...interface{}) {
-	DefaultLogger.Debugf(format, args...)
+	defaultLogger.Debugf(format, args...)
 }
 
 // Infof logs messages at INFO level.
 func Infof(format string, args ...interface{}) {
-	DefaultLogger.Infof(format, args...)
+	defaultLogger.Infof(format, args...)
 }
 
 // Warnf logs messages at WARN level.
 func Warnf(format string, args ...interface{}) {
-	DefaultLogger.Warnf(format, args...)
+	defaultLogger.Warnf(format, args...)
 }
 
 // Errorf logs messages at ERROR level.
 func Errorf(format string, args ...interface{}) {
-	DefaultLogger.Errorf(format, args...)
+	defaultLogger.Errorf(format, args...)
 }
 
 // Fatalf logs messages at FATAL level.
 func Fatalf(format string, args ...interface{}) {
-	DefaultLogger.Errorf(format, args...)
+	defaultLogger.Errorf(format, args...)
 }
 
 // Logger is used for logging formatted messages.

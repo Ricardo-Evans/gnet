@@ -18,14 +18,35 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package queue
+// +build linux,arm64 linux,riscv64
+// +build poll_opt
 
-// Task is a asynchronous function.
-type Task func() error
+package netpoll
 
-// AsyncTaskQueue is a queue storing asynchronous tasks.
-type AsyncTaskQueue interface {
-	Enqueue(Task)
-	Dequeue() Task
-	Empty() bool
+import (
+	"unsafe"
+
+	"golang.org/x/sys/unix"
+)
+
+func epollWait(epfd int, events []epollevent, msec int) (int, error) {
+	var ep unsafe.Pointer
+	if len(events) > 0 {
+		ep = unsafe.Pointer(&events[0])
+	} else {
+		ep = unsafe.Pointer(&zero)
+	}
+	var (
+		np    uintptr
+		errno unix.Errno
+	)
+	if msec == 0 { // non-block system call, use RawSyscall6 to avoid getting preempted by runtime
+		np, _, errno = unix.RawSyscall6(unix.SYS_EPOLL_PWAIT, uintptr(epfd), uintptr(ep), uintptr(len(events)), 0, 0, 0)
+	} else {
+		np, _, errno = unix.Syscall6(unix.SYS_EPOLL_PWAIT, uintptr(epfd), uintptr(ep), uintptr(len(events)), uintptr(msec), 0, 0)
+	}
+	if errno != 0 {
+		return int(np), errnoErr(errno)
+	}
+	return int(np), nil
 }

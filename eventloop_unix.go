@@ -28,16 +28,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
-	gerrors "github.com/panjf2000/gnet/errors"
-	"github.com/panjf2000/gnet/internal/logging"
-	"github.com/panjf2000/gnet/internal/netpoll"
-	"github.com/panjf2000/gnet/internal/socket"
 	"golang.org/x/sys/unix"
+
+	gerrors "github.com/panjf2000/gnet/errors"
+	"github.com/panjf2000/gnet/internal/io"
+	"github.com/panjf2000/gnet/internal/netpoll"
+	"github.com/panjf2000/gnet/logging"
 )
 
 type eventloop struct {
@@ -60,6 +60,10 @@ type internalEventloop struct {
 	eventHandler EventHandler    // user eventHandler
 }
 
+func (el *eventloop) getLogger() logging.Logger {
+	return el.svr.opts.Logger
+}
+
 func (el *eventloop) addConn(delta int32) {
 	atomic.AddInt32(&el.connCount, delta)
 }
@@ -75,49 +79,15 @@ func (el *eventloop) closeAllConns() {
 	}
 }
 
-func (el *eventloop) loopRun(lockOSThread bool) {
-	if lockOSThread {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
+func (el *eventloop) loopRegister(itf interface{}) error {
+	c := itf.(*conn)
+	if err := el.poller.AddRead(c.pollAttachment); err != nil {
+		_ = unix.Close(c.fd)
+		c.releaseTCP()
+		return nil
 	}
-
-	defer func() {
-		el.closeAllConns()
-		el.ln.close()
-		el.svr.signalShutdown()
-	}()
-
-	err := el.poller.Polling(el.handleEvent)
-	logging.Infof("Event-loop(%d) is exiting due to error: %v", el.idx, err)
-}
-
-func (el *eventloop) loopAccept(fd int) error {
-	if fd == el.ln.fd {
-		if el.ln.network == "udp" {
-			return el.loopReadUDP(fd)
-		}
-
-		nfd, sa, err := unix.Accept(fd)
-		if err != nil {
-			if err == unix.EAGAIN {
-				return nil
-			}
-			return os.NewSyscallError("accept", err)
-		}
-		if err = os.NewSyscallError("fcntl nonblock", unix.SetNonblock(nfd, true)); err != nil {
-			return err
-		}
-
-		netAddr := socket.SockaddrToTCPOrUnixAddr(sa)
-		c := newTCPConn(nfd, el, sa, netAddr)
-		if err = el.poller.AddRead(c.fd); err == nil {
-			el.connections[c.fd] = c
-			return el.loopOpen(c)
-		}
-		return err
-	}
-
-	return nil
+	el.connections[c.fd] = c
+	return el.loopOpen(c)
 }
 
 func (el *eventloop) loopOpen(c *conn) error {
@@ -130,7 +100,7 @@ func (el *eventloop) loopOpen(c *conn) error {
 	}
 
 	if !c.outboundBuffer.IsEmpty() {
-		_ = el.poller.AddWrite(c.fd)
+		_ = el.poller.AddWrite(c.pollAttachment)
 	}
 
 	return el.handleAction(c, action)
@@ -149,7 +119,6 @@ func (el *eventloop) loopRead(c *conn) error {
 	for inFrame, _ := c.read(); inFrame != nil; inFrame, _ = c.read() {
 		out, action := el.eventHandler.React(inFrame, c)
 		if out != nil {
-			el.eventHandler.PreWrite()
 			// Encode data and try to write it back to the client, this attempt is based on a fact:
 			// a client socket waits for the response data after sending request data to the server,
 			// which makes the client socket writable.
@@ -179,31 +148,29 @@ func (el *eventloop) loopRead(c *conn) error {
 func (el *eventloop) loopWrite(c *conn) error {
 	el.eventHandler.PreWrite()
 
-	head, tail := c.outboundBuffer.LazyReadAll()
-	n, err := unix.Write(c.fd, head)
-	if err != nil {
-		if err == unix.EAGAIN {
-			return nil
-		}
-		return el.loopCloseConn(c, os.NewSyscallError("write", err))
+	head, tail := c.outboundBuffer.PeekAll()
+	var (
+		n   int
+		err error
+	)
+	if len(tail) > 0 {
+		n, err = io.Writev(c.fd, [][]byte{head, tail})
+	} else {
+		n, err = unix.Write(c.fd, head)
 	}
-	c.outboundBuffer.Shift(n)
-
-	if n == len(head) && tail != nil {
-		n, err = unix.Write(c.fd, tail)
-		if err != nil {
-			if err == unix.EAGAIN {
-				return nil
-			}
-			return el.loopCloseConn(c, os.NewSyscallError("write", err))
-		}
-		c.outboundBuffer.Shift(n)
+	c.outboundBuffer.Discard(n)
+	switch err {
+	case nil, gerrors.ErrShortWritev: // do nothing, just go on
+	case unix.EAGAIN:
+		return nil
+	default:
+		return el.loopCloseConn(c, os.NewSyscallError("write", err))
 	}
 
 	// All data have been drained, it's no need to monitor the writable events,
 	// remove the writable event from poller to help the future event-loops.
 	if c.outboundBuffer.IsEmpty() {
-		_ = el.poller.ModRead(c.fd)
+		_ = el.poller.ModRead(c.pollAttachment)
 	}
 
 	return nil
@@ -211,14 +178,14 @@ func (el *eventloop) loopWrite(c *conn) error {
 
 func (el *eventloop) loopCloseConn(c *conn, err error) (rerr error) {
 	if !c.opened {
-		return nil
+		return
 	}
 
 	// Send residual data in buffer back to client before actually closing the connection.
 	if !c.outboundBuffer.IsEmpty() {
 		el.eventHandler.PreWrite()
 
-		head, tail := c.outboundBuffer.LazyReadAll()
+		head, tail := c.outboundBuffer.PeekAll()
 		if n, err := unix.Write(c.fd, head); err == nil {
 			if n == len(head) && tail != nil {
 				_, _ = unix.Write(c.fd, tail)
@@ -285,8 +252,8 @@ func (el *eventloop) loopTicker(ctx context.Context) {
 		switch action {
 		case None:
 		case Shutdown:
-			_ = el.poller.Trigger(func() error { return gerrors.ErrServerShutdown })
-			// logging.Debugf("stopping ticker in event-loop(%d) from Tick(), Trigger:%v", el.idx, err)
+			err := el.poller.UrgentTrigger(func(_ interface{}) error { return gerrors.ErrServerShutdown }, nil)
+			el.getLogger().Debugf("stopping ticker in event-loop(%d) from Tick(), UrgentTrigger:%v", el.idx, err)
 		}
 		if timer == nil {
 			timer = time.NewTimer(delay)
@@ -295,7 +262,7 @@ func (el *eventloop) loopTicker(ctx context.Context) {
 		}
 		select {
 		case <-ctx.Done():
-			// logging.Debugf("stopping ticker in event-loop(%d) from Server, error:%v", el.idx, ctx.Err())
+			el.getLogger().Debugf("stopping ticker in event-loop(%d) from Server, error:%v", el.idx, ctx.Err())
 			return
 		case <-timer.C:
 		}

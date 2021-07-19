@@ -1,4 +1,4 @@
-// Copyright (c) 2019 Andy Pan
+// Copyright (c) 2021 Andy Pan
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -18,23 +18,35 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-// +build freebsd dragonfly darwin
+// +build linux,!arm64,!riscv64
+// +build poll_opt
 
-package gnet
+package netpoll
 
-import "github.com/panjf2000/gnet/internal/netpoll"
+import (
+	"unsafe"
 
-func (el *eventloop) handleEvent(fd int, filter int16) (err error) {
-	if c, ok := el.connections[fd]; ok {
-		switch filter {
-		case netpoll.EVFilterSock:
-			err = el.loopCloseConn(c, nil)
-		case netpoll.EVFilterWrite:
-			err = el.loopWrite(c)
-		case netpoll.EVFilterRead:
-			err = el.loopRead(c)
-		}
-		return
+	"golang.org/x/sys/unix"
+)
+
+func epollWait(epfd int, events []epollevent, msec int) (int, error) {
+	var ep unsafe.Pointer
+	if len(events) > 0 {
+		ep = unsafe.Pointer(&events[0])
+	} else {
+		ep = unsafe.Pointer(&zero)
 	}
-	return el.loopAccept(fd)
+	var (
+		np    uintptr
+		errno unix.Errno
+	)
+	if msec == 0 { // non-block system call, use RawSyscall6 to avoid getting preempted by runtime
+		np, _, errno = unix.RawSyscall6(unix.SYS_EPOLL_WAIT, uintptr(epfd), uintptr(ep), uintptr(len(events)), 0, 0, 0)
+	} else {
+		np, _, errno = unix.Syscall6(unix.SYS_EPOLL_WAIT, uintptr(epfd), uintptr(ep), uintptr(len(events)), uintptr(msec), 0, 0)
+	}
+	if errno != 0 {
+		return int(np), errnoErr(errno)
+	}
+	return int(np), nil
 }
