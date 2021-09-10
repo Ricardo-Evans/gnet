@@ -38,7 +38,6 @@ type Action int
 
 type Client interface {
 	Dial(addr string) (Conn, error)
-	Close()
 }
 
 const (
