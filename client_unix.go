@@ -24,11 +24,11 @@ func (c *client) Dial(addr string) (Conn, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	network, address := parseProtoAddr(addr)
-	sa, na, err := socket.GetUDPSocketAddr(network, address)
+	sa, _, na, _, err := socket.GetUDPSockAddr(network, address)
 	if err != nil {
 		return nil, err
 	}
 	el := c.server.svr.lb.next(na)
-	connection := newUDPConn(el.ln.fd, el, sa)
+	connection := newUDPConn(el.ln.fd, el, el.ln.addr, sa, false)
 	return connection, nil
 }
