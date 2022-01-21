@@ -313,7 +313,6 @@ func Serve(eventHandler EventHandler, protoAddr string, opts ...Option) (err err
 		options.ReadBufferCap = ringbuffer.DefaultBufferSize
 	default:
 		options.ReadBufferCap = toolkit.CeilToPowerOfTwo(rbc)
-		ringbuffer.MaxStreamBufferCap = options.ReadBufferCap
 	}
 
 	network, addr := parseProtoAddr(protoAddr)

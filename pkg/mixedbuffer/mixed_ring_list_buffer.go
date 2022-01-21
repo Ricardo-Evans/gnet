@@ -25,51 +25,76 @@ import (
 // list-buffer if the data size of ring-buffer reaches the maximum(MaxStackingBytes), list-buffer is more
 // flexible and scalable, which helps the application reduce memory footprint.
 type Buffer struct {
-	maxStackingBytes int
-	ringBuffer       *ringbuffer.RingBuffer
-	listBuffer       listbuffer.ListBuffer
+	maxStaticBytes int
+	ringBuffer     *ringbuffer.RingBuffer
+	listBuffer     listbuffer.ListBuffer
 }
 
 // New instantiates a mixedbuffer.Buffer and returns it.
-func New(maxTopBufCap int) *Buffer {
-	return &Buffer{maxStackingBytes: maxTopBufCap, ringBuffer: rbPool.GetWithSize(maxTopBufCap)}
+func New(maxStaticBytes int) *Buffer {
+	return &Buffer{maxStaticBytes: maxStaticBytes, ringBuffer: rbPool.Get()}
 }
 
 // Peek returns n bytes as [][]byte, these bytes won't be discarded until Buffer.Discard() is called.
 func (mb *Buffer) Peek(n int) [][]byte {
+	if mb.ringBuffer == nil {
+		return mb.listBuffer.PeekBytesList(n)
+	}
+
 	head, tail := mb.ringBuffer.PeekAll()
 	return mb.listBuffer.PeekBytesListWithBytes(n, head, tail)
 }
 
 // Discard discards n bytes in this buffer.
 func (mb *Buffer) Discard(n int) {
+	if mb.ringBuffer == nil {
+		mb.listBuffer.DiscardBytes(n)
+		return
+	}
+
 	rbLen := mb.ringBuffer.Length()
 	mb.ringBuffer.Discard(n)
 	if n <= rbLen {
+		if n == rbLen {
+			rbPool.Put(mb.ringBuffer)
+			mb.ringBuffer = nil
+		}
 		return
 	}
+	rbPool.Put(mb.ringBuffer)
+	mb.ringBuffer = nil
 	n -= rbLen
 	mb.listBuffer.DiscardBytes(n)
 }
 
 // Write appends data to this buffer.
 func (mb *Buffer) Write(p []byte) (n int, err error) {
-	if !mb.listBuffer.IsEmpty() || mb.ringBuffer.Length() >= mb.maxStackingBytes {
+	if mb.ringBuffer == nil && mb.listBuffer.IsEmpty() {
+		mb.ringBuffer = rbPool.Get()
+	}
+
+	if !mb.listBuffer.IsEmpty() || mb.ringBuffer.Length() >= mb.maxStaticBytes {
 		mb.listBuffer.PushBytesBack(p)
 		return len(p), nil
 	}
-	freeSize := mb.ringBuffer.Free()
-	if len(p) > freeSize {
-		n, err = mb.ringBuffer.Write(p[:freeSize])
-		mb.listBuffer.PushBytesBack(p[n:])
-		return
+	if mb.ringBuffer.Len() >= mb.maxStaticBytes {
+		freeSize := mb.ringBuffer.Free()
+		if n = len(p); n > freeSize {
+			_, _ = mb.ringBuffer.Write(p[:freeSize])
+			mb.listBuffer.PushBytesBack(p[freeSize:])
+			return
+		}
 	}
 	return mb.ringBuffer.Write(p)
 }
 
 // Writev appends multiple byte slices to this buffer.
 func (mb *Buffer) Writev(bs [][]byte) (int, error) {
-	if !mb.listBuffer.IsEmpty() || mb.ringBuffer.Length() >= mb.maxStackingBytes {
+	if mb.ringBuffer == nil && mb.listBuffer.IsEmpty() {
+		mb.ringBuffer = rbPool.Get()
+	}
+
+	if !mb.listBuffer.IsEmpty() || mb.ringBuffer.Length() >= mb.maxStaticBytes {
 		var n int
 		for _, b := range bs {
 			mb.listBuffer.PushBytesBack(b)
@@ -77,33 +102,45 @@ func (mb *Buffer) Writev(bs [][]byte) (int, error) {
 		}
 		return n, nil
 	}
-	var pos, sum int
-	freeSize := mb.ringBuffer.Free()
+
+	var pos, cum int
+	writableSize := mb.ringBuffer.Free()
+	if mb.ringBuffer.Len() < mb.maxStaticBytes {
+		writableSize = mb.maxStaticBytes - mb.ringBuffer.Length()
+	}
 	for i, b := range bs {
 		pos = i
-		sum += len(b)
-		if len(b) > freeSize {
-			n, _ := mb.ringBuffer.Write(b[:freeSize])
-			mb.listBuffer.PushBytesBack(b[n:])
+		cum += len(b)
+		if len(b) > writableSize {
+			_, _ = mb.ringBuffer.Write(b[:writableSize])
+			mb.listBuffer.PushBytesBack(b[writableSize:])
 			break
 		}
 		n, _ := mb.ringBuffer.Write(b)
-		freeSize -= n
+		writableSize -= n
 	}
 	for pos++; pos < len(bs); pos++ {
-		sum += len(bs[pos])
+		cum += len(bs[pos])
 		mb.listBuffer.PushBytesBack(bs[pos])
 	}
-	return sum, nil
+	return cum, nil
 }
 
 // IsEmpty indicates whether this buffer is empty.
 func (mb *Buffer) IsEmpty() bool {
+	if mb.ringBuffer == nil {
+		return mb.listBuffer.IsEmpty()
+	}
+
 	return mb.ringBuffer.IsEmpty() && mb.listBuffer.IsEmpty()
 }
 
 // Release frees all resource of this buffer.
 func (mb *Buffer) Release() {
-	rbPool.Put(mb.ringBuffer)
+	if mb.ringBuffer != nil {
+		rbPool.Put(mb.ringBuffer)
+		mb.ringBuffer = nil
+	}
+
 	mb.listBuffer.Reset()
 }

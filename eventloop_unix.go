@@ -113,7 +113,7 @@ func (el *eventloop) open(c *conn) error {
 }
 
 func (el *eventloop) read(c *conn) error {
-	n, err := c.inboundBuffer.CopyFromSocket(c.fd)
+	n, err := unix.Read(c.fd, el.buffer)
 	if n == 0 || err != nil {
 		if err == unix.EAGAIN {
 			return nil
@@ -121,8 +121,8 @@ func (el *eventloop) read(c *conn) error {
 		return el.closeConn(c, os.NewSyscallError("read", err))
 	}
 
-	var packet []byte
-	for packet, err = c.read(); err == nil; packet, err = c.read() {
+	c.buffer = el.buffer[:n]
+	for packet, _ := c.read(); packet != nil; packet, _ = c.read() {
 		out, action := el.eventHandler.React(packet, c)
 		if out != nil {
 			// Encode data and try to write it back to the peer, this attempt is based on a fact:
@@ -146,9 +146,8 @@ func (el *eventloop) read(c *conn) error {
 			return nil
 		}
 	}
-	if err != gerrors.ErrIncompletePacket {
-		return el.closeConn(c, err)
-	}
+
+	_, _ = c.inboundBuffer.Write(c.buffer)
 
 	return nil
 }
@@ -214,7 +213,6 @@ func (el *eventloop) closeConn(c *conn, err error) (rerr error) {
 
 	// Send residual data in buffer back to the peer before actually closing the connection.
 	if !c.outboundBuffer.IsEmpty() {
-		el.eventHandler.PreWrite(c)
 		for !c.outboundBuffer.IsEmpty() {
 			iov := c.outboundBuffer.Peek(0)
 			if len(iov) > MaxIovSize {
@@ -222,35 +220,32 @@ func (el *eventloop) closeConn(c *conn, err error) (rerr error) {
 			}
 			n, err := io.Writev(c.fd, iov)
 			if err != nil && err != unix.EAGAIN {
-				el.getLogger().Errorf("closeConn: error occurs when sending data back to peer, %v", err)
+				el.getLogger().Warnf("closeConn: error occurs when sending data back to peer, %v", err)
 				break
 			}
 			c.outboundBuffer.Discard(n)
 		}
-		c.outboundBuffer.Release()
 	}
 
-	if err0, err1 := el.poller.Delete(c.fd), unix.Close(c.fd); err0 == nil && err1 == nil {
-		delete(el.connections, c.fd)
-		el.addConn(-1)
-
-		if el.eventHandler.OnClosed(c, err) == Shutdown {
-			return gerrors.ErrServerShutdown
-		}
-		c.releaseTCP()
-	} else {
-		if err0 != nil {
-			rerr = fmt.Errorf("failed to delete fd=%d from poller in event-loop(%d): %v", c.fd, el.idx, err0)
-		}
-		if err1 != nil {
-			err1 = fmt.Errorf("failed to close fd=%d in event-loop(%d): %v", c.fd, el.idx, os.NewSyscallError("close", err1))
-			if rerr != nil {
-				rerr = errors.New(rerr.Error() + " & " + err1.Error())
-			} else {
-				rerr = err1
-			}
+	err0, err1 := el.poller.Delete(c.fd), unix.Close(c.fd)
+	if err0 != nil {
+		rerr = fmt.Errorf("failed to delete fd=%d from poller in event-loop(%d): %v", c.fd, el.idx, err0)
+	}
+	if err1 != nil {
+		err1 = fmt.Errorf("failed to close fd=%d in event-loop(%d): %v", c.fd, el.idx, os.NewSyscallError("close", err1))
+		if rerr != nil {
+			rerr = errors.New(rerr.Error() + " & " + err1.Error())
+		} else {
+			rerr = err1
 		}
 	}
+
+	delete(el.connections, c.fd)
+	el.addConn(-1)
+	if el.eventHandler.OnClosed(c, err) == Shutdown {
+		rerr = gerrors.ErrServerShutdown
+	}
+	c.releaseTCP()
 
 	return
 }
